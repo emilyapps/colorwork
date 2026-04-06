@@ -1,0 +1,8 @@
+# System dependency (install via Homebrew):
+#   brew install ghostscript   # required for PDF export
+
+shiny>=1.6.0
+
+#All imports across all four files are standard library 
+#(tkinter, sqlite3, json, os, random, subprocess, shutil, tempfile, datetime) plus one  
+#third-party package: shiny. The optional cairosvg import is try/except guarded and not required.
