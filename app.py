@@ -13,6 +13,16 @@ from shiny import App, reactive, render, ui, req
 import pattern_core
 import db
 
+import shutil as _shutil
+
+def _find_gs():
+    for candidate in ("gs", "/opt/homebrew/bin/gs", "/usr/local/bin/gs"):
+        if _shutil.which(candidate):
+            return candidate
+    return None
+
+_GS = _find_gs()   # None if Ghostscript not installed
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -73,6 +83,142 @@ def _contrast_html(fill_hex, bg_hex):
 # ---------------------------------------------------------------------------
 
 HARMONY_LABELS = ["Comp", "Split", "Split", "Analog", "Analog", "Triad", "Triad"]
+
+
+def _render_ps(descriptors, page_w, page_h, dy=0):
+    """Convert descriptors to PostScript, with optional vertical offset dy
+    (in descriptor/screen coordinates, applied before Y-axis flip)."""
+
+    def _rgb(hex_color):
+        try:
+            r, g, b = pattern_core._hex_to_rgb(hex_color)
+            return f"{r/255:.4f} {g/255:.4f} {b/255:.4f}"
+        except Exception:
+            return "0 0 0"
+
+    def fy(y, h=0):
+        """Flip from top-down to PostScript bottom-up coords."""
+        return page_h - (y + dy) - h
+
+    out = []
+    for d in descriptors:
+        if d["type"] == "rect":
+            x, y, w, h = d["x"], d["y"], d["w"], d["h"]
+            out.append(f"{_rgb(d['fill'])} setrgbcolor {x} {fy(y,h):.1f} {w} {h} rectfill")
+            ol = d.get("outline", "none")
+            lw = d.get("outline_width", 0)
+            if lw > 0 and ol not in ("none", ""):
+                out.append(f"{_rgb(ol)} setrgbcolor {lw} setlinewidth "
+                            f"{x} {fy(y,h):.1f} {w} {h} rectstroke")
+        elif d["type"] == "text":
+            x, y = d["x"], d["y"]
+            fs   = d["font_size"]
+            txt  = str(d["text"]).replace("\\","\\\\").replace("(","\\(").replace(")","\\)")
+            out.append(f"/Helvetica findfont {fs} scalefont setfont")
+            out.append(f"{_rgb(d['fill'])} setrgbcolor")
+            out.append(f"{x:.1f} {fy(y):.1f} moveto "
+                       f"({txt}) dup stringwidth pop 2 div neg 0 rmoveto show")
+        elif d["type"] == "line":
+            x1, y1, x2, y2 = d["x1"], d["y1"], d["x2"], d["y2"]
+            lw = d.get("width", 1)
+            out.append(f"{_rgb(d['fill'])} setrgbcolor {lw} setlinewidth "
+                       f"{x1:.1f} {fy(y1):.1f} moveto {x2:.1f} {fy(y2):.1f} lineto stroke")
+    return "\n".join(out)
+
+
+def _make_export(
+    grid, H, W, fill_hex, bg_hex,
+    domain_cells, col_strip, row_strip, corner,
+    h_on, v_on, sw,
+    h_repeat, v_repeat,
+    h_type, v_type, n_copies, row_offset, col_offset,
+    include_tiling=False,
+):
+    """Return (bytes, ext) — PDF bytes via Ghostscript, or SVG bytes as fallback.
+
+    include_tiling: if True, append the tiling preview below the pattern grid.
+    """
+    import subprocess, tempfile, os
+
+    cs_p = 20   # pattern cell size for export
+    cs_t = 8    # tiling cell size for export
+    GAP  = 30   # gap between sections when tiling is included
+
+    # Pattern descriptors
+    p_descs = pattern_core.get_tile_descriptors(
+        grid=grid, H=H, W=W, cell_size=cs_p,
+        fill_color=fill_hex, bg_color=bg_hex,
+        domain_cells=domain_cells, show_domain=False,
+        col_strip=col_strip, row_strip=row_strip, corner=corner,
+        h_on=h_on, v_on=v_on, strip_width=sw,
+    )
+    p_w, p_h = pattern_core.tile_canvas_size(H, W, cs_p, h_on, v_on, sw)
+
+    if include_tiling:
+        # Use actual h_repeat/v_repeat (not the strip-gated h_on/v_on)
+        t_descs, t_rows, t_cols = pattern_core.get_tiling_descriptors(
+            grid=grid, H=H, W=W, cell_size=cs_t,
+            fill_color=fill_hex, bg_color=bg_hex,
+            h_repeat=h_repeat, v_repeat=v_repeat, strip_width=sw,
+            h_type=h_type, v_type=v_type,
+            col_strip=col_strip, row_strip=row_strip, corner=corner,
+            n_copies=n_copies, row_offset=row_offset, col_offset=col_offset,
+        )
+        t_w = t_cols * cs_t + 2
+        t_h = t_rows * cs_t + 2
+        total_w = max(p_w, t_w)
+        total_h = p_h + GAP + t_h
+    else:
+        total_w = p_w
+        total_h = p_h
+
+    if not _GS:
+        # Ghostscript unavailable — fall back to SVG
+        def _inner(svg_str):
+            lines = svg_str.strip().split('\n')
+            return '\n'.join(lines[1:-1])
+        p_svg = pattern_core.render_grid_svg(p_descs, p_w, p_h, responsive=False)
+        if include_tiling:
+            t_svg = pattern_core.render_tiling_svg(t_descs, t_rows, t_cols, cs_t, responsive=False)
+            svg = (f'<svg width="{total_w}" height="{total_h}" xmlns="http://www.w3.org/2000/svg">\n'
+                   f'  <g>{_inner(p_svg)}</g>\n'
+                   f'  <g transform="translate(0,{p_h + GAP})">{_inner(t_svg)}</g>\n'
+                   f'</svg>')
+        else:
+            svg = p_svg
+        return svg.encode(), "svg"
+
+    # Build PostScript
+    ps_body = _render_ps(p_descs, total_w, total_h, dy=0)
+    if include_tiling:
+        ps_body += "\n" + _render_ps(t_descs, total_w, total_h, dy=p_h + GAP)
+
+    ps_doc = (
+        f"%!PS-Adobe-3.0\n"
+        f"%%BoundingBox: 0 0 {total_w} {total_h}\n"
+        f"%%EndComments\n"
+        f"{ps_body}\n"
+        f"showpage\n"
+        f"%%EOF\n"
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".ps", delete=False, mode="w") as f:
+        f.write(ps_doc)
+        ps_path = f.name
+    pdf_path = ps_path.replace(".ps", ".pdf")
+    try:
+        subprocess.run(
+            [_GS, "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
+             f"-dDEVICEWIDTHPOINTS={total_w}", f"-dDEVICEHEIGHTPOINTS={total_h}",
+             f"-sOutputFile={pdf_path}", ps_path],
+            check=True, capture_output=True, timeout=30,
+        )
+        with open(pdf_path, "rb") as f:
+            return f.read(), "pdf"
+    finally:
+        for p in (ps_path, pdf_path):
+            try: os.unlink(p)
+            except: pass
 
 # Shared CSS
 _CSS = """
@@ -297,6 +443,11 @@ app_ui = ui.page_fluid(
                                     class_="btn-outline-danger btn-sm w-100"),
                                 col_widths=[4, 4, 4],
                             ),
+                            ui.download_button(
+                                "export_pdf", "Export PDF" if _GS else "Export SVG",
+                                class_="btn-outline-secondary btn-sm w-100",
+                                style="margin-top:6px",
+                            ),
                             ui.output_ui("save_status_ui"),
                             ui.output_ui("load_status_p_ui"),
                         ),
@@ -317,6 +468,11 @@ app_ui = ui.page_fluid(
                                     "btn_delete_proj", "Del",
                                     class_="btn-outline-danger btn-sm w-100"),
                                 col_widths=[4, 4, 4],
+                            ),
+                            ui.download_button(
+                                "export_pdf_proj", "Export PDF" if _GS else "Export SVG",
+                                class_="btn-outline-secondary btn-sm w-100",
+                                style="margin-top:6px",
                             ),
                             ui.output_ui("save_status_proj_ui"),
                             ui.output_ui("load_status_proj_ui"),
@@ -1023,6 +1179,45 @@ def server(input, output, session):
             load_msg_proj_rv.set("Deleted.")
         except Exception as e:
             load_msg_proj_rv.set(f"Error: {e}")
+
+    # ----------------------------------------------------------------
+    # Export
+    # ----------------------------------------------------------------
+    def _export_args():
+        sw = input.strip_width()
+        h_rep = input.h_repeat()
+        v_rep = input.v_repeat()
+        return dict(
+            grid=grid_rv.get(), H=H_rv.get(), W=W_rv.get(),
+            fill_hex=fill_hex_rv.get(), bg_hex=bg_hex_rv.get(),
+            domain_cells=domain_cells_rv.get(),
+            col_strip=col_strip_rv.get(), row_strip=row_strip_rv.get(),
+            corner=corner_rv.get(),
+            h_on=h_rep and sw > 0,
+            v_on=v_rep and sw > 0,
+            sw=sw,
+            h_repeat=h_rep,
+            v_repeat=v_rep,
+            h_type=input.h_type(), v_type=input.v_type(),
+            n_copies=int(input.preview_copies()),
+            row_offset=input.row_offset(), col_offset=input.col_offset(),
+        )
+
+    @render.download(
+        filename=lambda: "pattern.pdf" if _GS else "pattern.svg",
+        media_type=lambda: "application/pdf" if _GS else "image/svg+xml",
+    )
+    def export_pdf():
+        data, _ = _make_export(**_export_args(), include_tiling=False)
+        yield data
+
+    @render.download(
+        filename=lambda: "project.pdf" if _GS else "project.svg",
+        media_type=lambda: "application/pdf" if _GS else "image/svg+xml",
+    )
+    def export_pdf_proj():
+        data, _ = _make_export(**_export_args(), include_tiling=True)
+        yield data
 
 
 # ---------------------------------------------------------------------------
