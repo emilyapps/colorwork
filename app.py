@@ -275,40 +275,53 @@ app_ui = ui.page_fluid(
                 ),
 
                 # ----------------------------------------------------------
-                # Tab 4: Save / Load
+                # Tab 4: Save / Load (nested Patterns / Projects)
                 # ----------------------------------------------------------
                 ui.nav_panel("Save/Load",
-                    ui.card(
-                        ui.card_header("Save"),
-                        ui.input_text("save_name", "Name",
-                                      placeholder="my pattern"),
-                        ui.layout_columns(
-                            ui.input_action_button(
-                                "btn_save_pattern", "Pattern",
-                                class_="btn-primary btn-sm w-100"),
-                            ui.input_action_button(
-                                "btn_save_project", "Project",
-                                class_="btn-outline-primary btn-sm w-100"),
-                            col_widths=[6, 6],
+                    ui.navset_pill(
+
+                        ui.nav_panel("Patterns",
+                            ui.output_ui("pattern_list_ui"),
+                            ui.div(style="height:6px"),
+                            ui.input_text("save_name_p", None,
+                                          placeholder="name…"),
+                            ui.layout_columns(
+                                ui.input_action_button(
+                                    "btn_save_pattern", "Save",
+                                    class_="btn-success btn-sm w-100"),
+                                ui.input_action_button(
+                                    "btn_load_pattern", "Load",
+                                    class_="btn-primary btn-sm w-100"),
+                                ui.input_action_button(
+                                    "btn_delete_p", "Del",
+                                    class_="btn-outline-danger btn-sm w-100"),
+                                col_widths=[4, 4, 4],
+                            ),
+                            ui.output_ui("save_status_ui"),
+                            ui.output_ui("load_status_p_ui"),
                         ),
-                        ui.output_ui("save_status_ui"),
-                    ),
-                    ui.card(
-                        ui.card_header("Load"),
-                        ui.output_ui("saved_list_ui"),
-                        ui.layout_columns(
-                            ui.input_action_button(
-                                "btn_load_pattern", "Load Pattern",
-                                class_="btn-primary btn-sm w-100"),
-                            ui.input_action_button(
-                                "btn_load_project", "Load Project",
-                                class_="btn-outline-primary btn-sm w-100"),
-                            ui.input_action_button(
-                                "btn_delete", "Delete",
-                                class_="btn-outline-danger btn-sm w-100"),
-                            col_widths=[4, 4, 4],
+
+                        ui.nav_panel("Projects",
+                            ui.output_ui("project_list_ui"),
+                            ui.div(style="height:6px"),
+                            ui.input_text("save_name_proj", None,
+                                          placeholder="name…"),
+                            ui.layout_columns(
+                                ui.input_action_button(
+                                    "btn_save_project", "Save",
+                                    class_="btn-success btn-sm w-100"),
+                                ui.input_action_button(
+                                    "btn_load_project", "Load",
+                                    class_="btn-primary btn-sm w-100"),
+                                ui.input_action_button(
+                                    "btn_delete_proj", "Del",
+                                    class_="btn-outline-danger btn-sm w-100"),
+                                col_widths=[4, 4, 4],
+                            ),
+                            ui.output_ui("save_status_proj_ui"),
+                            ui.output_ui("load_status_proj_ui"),
                         ),
-                        ui.output_ui("load_status_ui"),
+
                     ),
                 ),
 
@@ -744,77 +757,87 @@ def server(input, output, session):
     # ----------------------------------------------------------------
     # Outputs — Save / Load tab
     # ----------------------------------------------------------------
+    save_msg_proj_rv = reactive.Value("")
+    load_msg_p_rv    = reactive.Value("")
+    load_msg_proj_rv = reactive.Value("")
+    db_rev_rv        = reactive.Value(0)   # bumped after any save or delete
+
     @render.ui
     def save_status_ui():
         msg = save_msg_rv.get()
         if not msg: return ui.span()
-        return ui.div(msg, style="margin-top:8px;font-size:12px;color:#1a6e1a")
+        return ui.div(msg, style="margin-top:6px;font-size:12px;color:#1a6e1a")
 
     @render.ui
-    def load_status_ui():
-        msg = load_msg_rv.get()
+    def save_status_proj_ui():
+        msg = save_msg_proj_rv.get()
         if not msg: return ui.span()
-        return ui.div(msg, style="margin-top:8px;font-size:12px;color:#bb2222")
+        return ui.div(msg, style="margin-top:6px;font-size:12px;color:#1a6e1a")
 
     @render.ui
-    def saved_list_ui():
-        patterns  = db.list_patterns()
-        projects  = db.list_projects()
-        if not patterns and not projects:
-            return ui.p("No saved patterns or projects.",
-                        style="color:#888;font-size:12px")
-        rows = []
-        for p in patterns:
-            rid = f"p_{p['id']}"
-            rows.append(
-                ui.tags.tr(
-                    ui.tags.td(
-                        ui.input_radio_buttons(
-                            f"sel_{rid}", None,
-                            choices={rid: ""}, selected=None
-                        ),
-                        style="width:28px",
-                    ),
-                    ui.tags.td(
-                        ui.span(p["name"], style="font-weight:bold"), ui.tags.br(),
-                        ui.span(
-                            f"Pattern · {p['created_at'][:16]} · "
-                            f"{p['grid_w']}×{p['grid_h']} · {p['symmetry_group']}",
-                            style="font-size:11px;color:#666"
-                        ),
-                    ),
-                    style="cursor:pointer",
-                    onclick=(
-                        f"Shiny.setInputValue('list_select',"
-                        f"{{id:'{rid}',nonce:Math.random()}},"
-                        f"{{priority:'event'}})"
-                    ),
-                )
-            )
-        for p in projects:
-            rid = f"proj_{p['id']}"
-            rows.append(
-                ui.tags.tr(
-                    ui.tags.td(style="width:28px"),
-                    ui.tags.td(
-                        ui.span(p["name"], style="font-weight:bold"), ui.tags.br(),
-                        ui.span(
-                            f"Project · {p['created_at'][:16]}",
-                            style="font-size:11px;color:#666"
-                        ),
-                    ),
-                    style="cursor:pointer;background:#f5f0ff",
-                    onclick=(
-                        f"Shiny.setInputValue('list_select',"
-                        f"{{id:'{rid}',nonce:Math.random()}},"
-                        f"{{priority:'event'}})"
-                    ),
-                )
-            )
-        return ui.tags.table(
-            *rows,
-            style="width:100%;border-collapse:collapse;font-size:13px",
+    def load_status_p_ui():
+        msg = load_msg_p_rv.get()
+        if not msg: return ui.span()
+        return ui.div(msg, style="margin-top:6px;font-size:12px;color:#bb2222")
+
+    @render.ui
+    def load_status_proj_ui():
+        msg = load_msg_proj_rv.get()
+        if not msg: return ui.span()
+        return ui.div(msg, style="margin-top:6px;font-size:12px;color:#bb2222")
+
+    def _list_row(rid, name, detail, selected_id):
+        selected = (rid == selected_id)
+        bg = "background:#cce5ff" if selected else ""
+        return ui.tags.tr(
+            ui.tags.td(
+                ui.span(name, style="font-weight:600"), ui.tags.br(),
+                ui.span(detail, style="font-size:11px;color:#666"),
+                style="padding:4px 6px",
+            ),
+            style=f"cursor:pointer;{bg};border-bottom:1px solid #eee",
+            onclick=(
+                f"Shiny.setInputValue('list_select',"
+                f"{{id:'{rid}',nonce:Math.random()}},"
+                f"{{priority:'event'}})"
+            ),
         )
+
+    @render.ui
+    def pattern_list_ui():
+        db_rev_rv.get()          # reactive dependency — re-renders after save/delete
+        patterns = db.list_patterns()
+        sel = selected_id_rv.get()
+        if not patterns:
+            return ui.p("No saved patterns.", style="color:#888;font-size:12px")
+        rows = [
+            _list_row(
+                f"p_{p['id']}", p["name"],
+                f"{p['created_at'][:16]} · {p['grid_w']}×{p['grid_h']} · {p['symmetry_group']}",
+                sel,
+            )
+            for p in patterns
+        ]
+        return ui.tags.table(*rows,
+            style="width:100%;border-collapse:collapse;font-size:13px")
+
+    @render.ui
+    def project_list_ui():
+        db_rev_rv.get()          # reactive dependency — re-renders after save/delete
+        projects = db.list_projects()
+        sel = selected_id_rv.get()
+        if not projects:
+            return ui.p("No saved projects.", style="color:#888;font-size:12px")
+        rows = [
+            _list_row(
+                f"proj_{p['id']}", p["name"],
+                p["created_at"][:16],
+                sel,
+            )
+            for p in projects
+        ]
+        return ui.tags.table(*rows,
+            style="width:100%;border-collapse:collapse;font-size:13px")
 
     @reactive.effect
     def _list_select():
@@ -863,7 +886,7 @@ def server(input, output, session):
     @reactive.effect
     @reactive.event(input.btn_save_pattern)
     def _save_pattern():
-        name = input.save_name().strip()
+        name = input.save_name_p().strip()
         if not name:
             save_msg_rv.set("Enter a name first.")
             return
@@ -879,15 +902,17 @@ def server(input, output, session):
                 grid=grid_rv.get(),
             )
             save_msg_rv.set(f"Pattern saved (id {pid}).")
+            ui.update_text("save_name_p", value="", session=session)
+            db_rev_rv.set(db_rev_rv.get() + 1)
         except Exception as e:
             save_msg_rv.set(f"Error: {e}")
 
     @reactive.effect
     @reactive.event(input.btn_save_project)
     def _save_project():
-        name = input.save_name().strip()
+        name = input.save_name_proj().strip()
         if not name:
-            save_msg_rv.set("Enter a name first.")
+            save_msg_proj_rv.set("Enter a name first.")
             return
         key  = (int(input.rotation()), bool(input.reflect()))
         data = {
@@ -919,21 +944,23 @@ def server(input, output, session):
         }
         try:
             pid = db.save_project(name, data)
-            save_msg_rv.set(f"Project saved (id {pid}).")
+            save_msg_proj_rv.set(f"Project saved (id {pid}).")
+            ui.update_text("save_name_proj", value="", session=session)
+            db_rev_rv.set(db_rev_rv.get() + 1)
         except Exception as e:
-            save_msg_rv.set(f"Error: {e}")
+            save_msg_proj_rv.set(f"Error: {e}")
 
     @reactive.effect
     @reactive.event(input.btn_load_pattern)
     def _load_pattern():
         sel = selected_id_rv.get()
         if not sel or not sel.startswith("p_"):
-            load_msg_rv.set("Select a pattern first.")
+            load_msg_p_rv.set("Select a pattern first.")
             return
         pid  = int(sel[2:])
         data = db.load_pattern(pid)
         if data is None:
-            load_msg_rv.set("Pattern not found.")
+            load_msg_p_rv.set("Pattern not found.")
             return
         H, W = data["grid_h"], data["grid_w"]
         H_rv.set(H); W_rv.set(W)
@@ -950,39 +977,52 @@ def server(input, output, session):
         orbit_fn = pattern_core.ORBIT_FNS[(rotation, reflect)]
         _rebuild_domain(H, W, orbit_fn)
         _resize_strips(H, W, input.strip_width())
-        load_msg_rv.set("")
+        load_msg_p_rv.set("")
 
     @reactive.effect
     @reactive.event(input.btn_load_project)
     def _load_project():
         sel = selected_id_rv.get()
         if not sel or not sel.startswith("proj_"):
-            load_msg_rv.set("Select a project first.")
+            load_msg_proj_rv.set("Select a project first.")
             return
         pid = int(sel[5:])
         row = db.load_project(pid)
         if row is None:
-            load_msg_rv.set("Project not found.")
+            load_msg_proj_rv.set("Project not found.")
             return
         _restore_project(row["data"])
-        load_msg_rv.set("")
+        load_msg_proj_rv.set("")
 
     @reactive.effect
-    @reactive.event(input.btn_delete)
-    def _delete():
+    @reactive.event(input.btn_delete_p)
+    def _delete_p():
         sel = selected_id_rv.get()
-        if not sel:
-            load_msg_rv.set("Select an item first.")
+        if not sel or not sel.startswith("p_"):
+            load_msg_p_rv.set("Select a pattern first.")
             return
         try:
-            if sel.startswith("p_"):
-                db.delete_pattern(int(sel[2:]))
-            elif sel.startswith("proj_"):
-                db.delete_project(int(sel[5:]))
+            db.delete_pattern(int(sel[2:]))
             selected_id_rv.set(None)
-            load_msg_rv.set("Deleted.")
+            db_rev_rv.set(db_rev_rv.get() + 1)
+            load_msg_p_rv.set("Deleted.")
         except Exception as e:
-            load_msg_rv.set(f"Error: {e}")
+            load_msg_p_rv.set(f"Error: {e}")
+
+    @reactive.effect
+    @reactive.event(input.btn_delete_proj)
+    def _delete_proj():
+        sel = selected_id_rv.get()
+        if not sel or not sel.startswith("proj_"):
+            load_msg_proj_rv.set("Select a project first.")
+            return
+        try:
+            db.delete_project(int(sel[5:]))
+            selected_id_rv.set(None)
+            db_rev_rv.set(db_rev_rv.get() + 1)
+            load_msg_proj_rv.set("Deleted.")
+        except Exception as e:
+            load_msg_proj_rv.set(f"Error: {e}")
 
 
 # ---------------------------------------------------------------------------
