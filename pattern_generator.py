@@ -13,6 +13,27 @@ from pattern_core import (
 )
 
 # ---------------------------------------------------------------------------
+# Named colour palette helpers
+# ---------------------------------------------------------------------------
+
+def _sorted_named_colors():
+    """Return list of (name, hex_str) for all matplotlib CSS4 named colours,
+    neutrals (low saturation) first sorted by lightness, then chromatics by hue."""
+    from matplotlib.colors import CSS4_COLORS
+    neutrals, chromatics = [], []
+    for name, hex_val in CSS4_COLORS.items():
+        r, g, b = _hex_to_rgb(hex_val)
+        h, s, l = _rgb_to_hsl(r, g, b)
+        if s < 0.12:
+            neutrals.append((l, name, hex_val))
+        else:
+            chromatics.append((h, s, l, name, hex_val))
+    neutrals.sort()
+    chromatics.sort()
+    return [(n, hx) for _, n, hx in neutrals] + [(n, hx) for *_, n, hx in chromatics]
+
+
+# ---------------------------------------------------------------------------
 # Slider + Entry helper
 # ---------------------------------------------------------------------------
 
@@ -94,7 +115,8 @@ def make_slider_entry(parent, var, from_, to, resolution,
 class ColorPicker:
     """CMYK + HSL + hex color picker.  Call .get() for the current hex value."""
 
-    def __init__(self, parent, label, initial_hex, on_change, slider_length=120):
+    def __init__(self, top_parent, sliders_parent, label, initial_hex, on_change,
+                 slider_length=120):
         self._on_change = on_change
         self._updating  = False
         c0,m0,y0,k0 = hex_to_cmyk(initial_hex) or (0,0,0,100)
@@ -111,8 +133,9 @@ class ColorPicker:
         self._cmyk_entries = {}
         self._hsl_entries  = {}
 
+        # --- Top section (into top_parent) ---
         # Section label coloured with the initial colour
-        self._label = tk.Label(parent, text=f"  {label}  ",
+        self._label = tk.Label(top_parent, text=f"  {label}  ",
                                font=("", 10, "bold"),
                                bg=initial_hex,
                                fg=self._contrast_fg(initial_hex),
@@ -120,7 +143,7 @@ class ColorPicker:
         self._label.pack(anchor=tk.W, pady=(0, 6))
 
         # Swatch + hex entry
-        top = tk.Frame(parent)
+        top = tk.Frame(top_parent)
         top.pack(anchor=tk.W, pady=(0, 6))
         self._swatch = tk.Label(top, bg=initial_hex, width=7, height=2,
                                 relief="solid", borderwidth=1)
@@ -134,11 +157,12 @@ class ColorPicker:
         self._hex_entry.bind("<Return>",   self._on_hex)
         self._hex_entry.bind("<FocusOut>", self._on_hex)
 
+        # --- Slider section (into sliders_parent) ---
         # CMYK sliders with min/max labels and entry boxes
         lbl_style = {"font": ("", 8), "fg": "#888888"}
         for ch, var in [("C", self.c_var), ("M", self.m_var),
                         ("Y", self.y_var), ("K", self.k_var)]:
-            row = tk.Frame(parent)
+            row = tk.Frame(sliders_parent)
             row.pack(anchor=tk.W, pady=1)
             tk.Label(row, text=ch, width=2, font=("", 9, "bold")).pack(side=tk.LEFT)
             tk.Label(row, text="0",   **lbl_style).pack(side=tk.LEFT, padx=(0, 2))
@@ -154,7 +178,7 @@ class ColorPicker:
             self._cmyk_entries[ch] = e
 
         # HSL sliders
-        sep = tk.Frame(parent, height=1, bg="#cccccc")
+        sep = tk.Frame(sliders_parent, height=1, bg="#cccccc")
         sep.pack(fill=tk.X, pady=(6, 4))
         hsl_specs = [
             ("H", self.h_var, 0, 360),
@@ -162,7 +186,7 @@ class ColorPicker:
             ("L", self.l_var, 0, 100),
         ]
         for ch, var, lo, hi in hsl_specs:
-            row = tk.Frame(parent)
+            row = tk.Frame(sliders_parent)
             row.pack(anchor=tk.W, pady=1)
             tk.Label(row, text=ch, width=2, font=("", 9, "bold")).pack(side=tk.LEFT)
             tk.Label(row, text=str(lo), **lbl_style).pack(side=tk.LEFT, padx=(0, 2))
@@ -421,6 +445,58 @@ class ColorComparePanel:
             pass
 
 
+
+
+# ---------------------------------------------------------------------------
+# Named colour palette window
+# ---------------------------------------------------------------------------
+
+class NamedColorPalette(tk.Frame):
+    """Embeddable frame showing all matplotlib CSS4 named colours as clickable swatches."""
+    _COLS = 12
+
+    def __init__(self, parent, on_select):
+        """on_select(hex_str) is called when a swatch is clicked."""
+        super().__init__(parent)
+        self._on_select = on_select
+
+        colors = _sorted_named_colors()
+        neutral_count = 0
+        for _, hx in colors:
+            r, g, b = _hex_to_rgb(hx)
+            _, s, _ = _rgb_to_hsl(r, g, b)
+            if s < 0.12:
+                neutral_count += 1
+            else:
+                break
+
+        neutrals   = colors[:neutral_count]
+        chromatics = colors[neutral_count:]
+
+        self._status = tk.Label(self, text="", font=("Courier", 9),
+                                fg="#888888", anchor=tk.W, width=40)
+
+        def build_section(section_colors, section_label):
+            tk.Label(self, text=section_label,
+                     font=("", 8), fg="#888888").pack(anchor=tk.W, pady=(4, 2))
+            grid = tk.Frame(self)
+            grid.pack(anchor=tk.W)
+            for i, (name, hx) in enumerate(section_colors):
+                row, col = divmod(i, self._COLS)
+                sw = tk.Label(grid, bg=hx, width=4, height=1,
+                              relief="solid", borderwidth=1, cursor="hand2")
+                sw.grid(row=row, column=col, padx=1, pady=1)
+                sw.bind("<Enter>",    lambda e, n=name, h=hx: self._status.config(
+                    text=f"  {n}  {h}"))
+                sw.bind("<Leave>",    lambda e: self._status.config(text=""))
+                sw.bind("<Button-1>", lambda e, h=hx: self._on_select(h))
+
+        build_section(neutrals,   "Neutrals")
+        sep = tk.Frame(self, height=1, bg="#cccccc")
+        sep.pack(fill=tk.X, pady=(6, 2))
+        build_section(chromatics, "By hue")
+
+        self._status.pack(anchor=tk.W, pady=(6, 0))
 
 
 # ---------------------------------------------------------------------------
@@ -896,27 +972,87 @@ class PatternApp:
         win.withdraw()
         self._color_win = win
 
-        _panel = [None]
+        compare_panel = [None]
         def on_color_change():
             self.draw()
-            if _panel[0]:
-                _panel[0].refresh()
+            if compare_panel[0]:
+                compare_panel[0].refresh()
 
-        frame = tk.Frame(win, padx=12, pady=12)
-        frame.pack()
-        fc = tk.Frame(frame); fc.pack(side=tk.LEFT, anchor=tk.N, padx=(0,16))
-        self.fill_picker = ColorPicker(fc, "Fill",       "#000000", on_color_change)
-        bc = tk.Frame(frame); bc.pack(side=tk.LEFT, anchor=tk.N)
-        self.bg_picker   = ColorPicker(bc, "Background", "#ffffff", on_color_change)
+        # ------------------------------------------------------------------
+        # Top zone — color boxes (always visible)
+        # ------------------------------------------------------------------
+        header = tk.Frame(win, padx=12, pady=12)
+        header.pack()
+        fc_top = tk.Frame(header); fc_top.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 16))
+        bc_top = tk.Frame(header); bc_top.pack(side=tk.LEFT, anchor=tk.N)
 
-        bottom = tk.Frame(win, padx=12)
-        bottom.pack(fill=tk.X, pady=(0,12))
-        _panel[0] = ColorComparePanel(
-            bottom,
-            get_fill  = self.fill_picker.get,
-            get_bg    = self.bg_picker.get,
+        # ------------------------------------------------------------------
+        # Middle zone — swappable (palette or sliders)
+        # ------------------------------------------------------------------
+
+        # Palette view
+        palette_view = tk.Frame(win, padx=12)
+
+        target_var = tk.StringVar(value="fill")
+        radio_row = tk.Frame(palette_view)
+        radio_row.pack(anchor=tk.W, pady=(0, 8))
+        tk.Label(radio_row, text="Editing:", font=("", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        tk.Radiobutton(radio_row, text="Fill",       variable=target_var,
+                       value="fill",  font=("", 9)).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Radiobutton(radio_row, text="Background", variable=target_var,
+                       value="bg",    font=("", 9)).pack(side=tk.LEFT)
+
+        def on_palette_select(hex_str):
+            if target_var.get() == "fill":
+                self.fill_picker.set_color(hex_str)
+            else:
+                self.bg_picker.set_color(hex_str)
+            on_color_change()
+
+        NamedColorPalette(palette_view, on_select=on_palette_select).pack(anchor=tk.W)
+        sep_p = tk.Frame(palette_view, height=1, bg="#cccccc")
+        sep_p.pack(fill=tk.X, pady=(10, 8))
+        tk.Button(palette_view, text="Sliders…", font=("", 9),
+                  command=lambda: _show_sliders()).pack(anchor=tk.W, pady=(0, 4))
+
+        # Sliders view
+        sliders_view = tk.Frame(win, padx=12)
+
+        tk.Button(sliders_view, text="← Palette", font=("", 9),
+                  command=lambda: _show_palette()).pack(anchor=tk.W, pady=(0, 10))
+        sliders_row = tk.Frame(sliders_view)
+        sliders_row.pack()
+        fc_sliders = tk.Frame(sliders_row); fc_sliders.pack(side=tk.LEFT, anchor=tk.N, padx=(0, 16))
+        bc_sliders = tk.Frame(sliders_row); bc_sliders.pack(side=tk.LEFT, anchor=tk.N)
+
+        # Build pickers: top content → header frames, sliders → swap frames
+        self.fill_picker = ColorPicker(fc_top, fc_sliders, "Fill",       "#000000", on_color_change)
+        self.bg_picker   = ColorPicker(bc_top, bc_sliders, "Background", "#ffffff", on_color_change)
+
+        # ------------------------------------------------------------------
+        # Bottom zone — compare panel (always visible)
+        # ------------------------------------------------------------------
+        footer = tk.Frame(win, padx=12)
+        footer.pack(fill=tk.X, pady=(8, 12))
+        compare_panel[0] = ColorComparePanel(
+            footer,
+            get_fill    = self.fill_picker.get,
+            get_bg      = self.bg_picker.get,
             on_bg_click = lambda h: (self.bg_picker.set_color(h), on_color_change()),
         )
+
+        # ------------------------------------------------------------------
+        # View switching
+        # ------------------------------------------------------------------
+        def _show_palette():
+            sliders_view.pack_forget()
+            palette_view.pack(fill=tk.X)
+
+        def _show_sliders():
+            palette_view.pack_forget()
+            sliders_view.pack(fill=tk.X, pady=(0, 4))
+
+        _show_palette()
 
     def _build_tiling_window(self):
         self._tiling_win = TilingWindow(self.root, self)

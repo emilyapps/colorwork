@@ -2,6 +2,7 @@
 #   brew install ghostscript   # required for PDF export
 
 shiny>=1.6.0
+matplotlib>=3.5
 
 #All imports across all four files are standard library 
 #(tkinter, sqlite3, json, os, random, subprocess, shutil, tempfile, datetime) plus one  

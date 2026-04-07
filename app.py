@@ -39,9 +39,13 @@ def _contrast_fg(hex_color):
 
 def _color_swatch_html(hex_color, label):
     fg = _contrast_fg(hex_color)
-    return (f'<div style="display:inline-block;background:{hex_color};'
-            f'color:{fg};padding:4px 10px;border-radius:4px;'
-            f'font-weight:bold;font-size:13px">{label}</div>')
+    return (
+        f'<span style="display:inline-block;background:{hex_color};'
+        f'color:{fg};padding:3px 8px;border-radius:4px;'
+        f'font-weight:bold;font-size:12px">{label}</span>'
+        f'<span style="font-family:monospace;font-size:12px;'
+        f'color:#555;margin-left:8px">{hex_color}</span>'
+    )
 
 
 def _gradient_svg(fill_hex, bg_hex, width=280, height=20):
@@ -220,6 +224,56 @@ def _make_export(
             try: os.unlink(p)
             except: pass
 
+# ---------------------------------------------------------------------------
+# Named colour palette (static HTML, generated once at import time)
+# ---------------------------------------------------------------------------
+
+def _build_sorted_named_colors():
+    from matplotlib.colors import CSS4_COLORS
+    neutrals, chromatics = [], []
+    for name, hex_val in CSS4_COLORS.items():
+        r, g, b = pattern_core._hex_to_rgb(hex_val)
+        h, s, l = pattern_core._rgb_to_hsl(r, g, b)
+        if s < 0.12:
+            neutrals.append((l, name, hex_val))
+        else:
+            chromatics.append((h, s, l, name, hex_val))
+    neutrals.sort()
+    chromatics.sort()
+    return [(n, hx) for _, n, hx in neutrals] + [(n, hx) for *_, n, hx in chromatics]
+
+
+def _palette_swatches_html():
+    colors = _build_sorted_named_colors()
+    neutral_count = sum(
+        1 for _, hx in colors
+        if pattern_core._rgb_to_hsl(*pattern_core._hex_to_rgb(hx))[1] < 0.12
+    )
+    neutrals   = colors[:neutral_count]
+    chromatics = colors[neutral_count:]
+
+    def swatches(pairs):
+        parts = []
+        for name, hx in pairs:
+            parts.append(
+                f'<span title="{name} {hx}" class="palette-swatch"'
+                f' style="background:{hx}"'
+                f' onclick="Shiny.setInputValue(\'palette_click\','
+                f'{{hex:\'{hx}\',nonce:Math.random()}},{{priority:\'event\'}})"></span>'
+            )
+        return "".join(parts)
+
+    return (
+        '<span class="palette-section-label">Neutrals</span>'
+        + swatches(neutrals)
+        + '<hr style="margin:6px 0">'
+        '<span class="palette-section-label">By hue</span>'
+        + swatches(chromatics)
+    )
+
+_PALETTE_HTML = _palette_swatches_html()
+
+
 # Shared CSS
 _CSS = """
 body { font-family: system-ui, sans-serif; }
@@ -244,12 +298,37 @@ body { font-family: system-ui, sans-serif; }
 }
 .harmony-swatch:hover { transform: scale(1.15); }
 
+/* named colour palette swatches */
+.palette-swatch {
+    display:inline-block; width:24px; height:16px;
+    border:1px solid #ccc; border-radius:2px;
+    cursor:pointer; margin:1px; vertical-align:middle;
+    transition: transform .1s;
+}
+.palette-swatch:hover { transform: scale(1.2); }
+.palette-section-label {
+    display:block; font-size:11px; color:#888; margin:4px 0 2px;
+}
+
 /* pattern/tiling container: fills available width */
 .grid-wrap { overflow-x:auto; overflow-y:auto; padding:4px 0; }
 
 /* color sliders — compact */
-.color-sliders .shiny-input-container { margin-bottom:2px !important; }
-.color-sliders .irs { min-width:80px; }
+.color-sliders .shiny-input-container { margin-bottom: 0 !important; }
+.color-sliders .shiny-input-container label {
+    font-size: 11px !important; margin-bottom: 0 !important; line-height: 1.2;
+}
+.color-sliders .irs { margin-top: 0 !important; }
+.color-sliders .irs--shiny { height: 24px; }
+.color-sliders .irs--shiny .irs-line { top: 8px; height: 2px; }
+.color-sliders .irs--shiny .irs-bar  { top: 8px; height: 2px; }
+.color-sliders .irs--shiny .irs-handle { top: 3px; width: 11px; height: 11px; }
+.color-sliders .irs--shiny .irs-single { font-size: 9px; padding: 0 2px; top: -5px; }
+.color-sliders .irs-min, .color-sliders .irs-max { display: none !important; }
+.color-section-label {
+    font-size: 10px; font-weight: 600; color: #888;
+    margin: 6px 0 1px; text-transform: uppercase; letter-spacing: .04em;
+}
 
 /* sidebar tab nav — compact */
 .bslib-sidebar-layout > .sidebar > .sidebar-content .nav-link {
@@ -262,46 +341,15 @@ body { font-family: system-ui, sans-serif; }
 """
 
 def _color_card(prefix, init_hex, init_k):
-    """Build a fill or background color card with hex + CMYK accordion + HSL accordion."""
-    label_id  = f"{prefix}_label_ui"
-    is_fill   = prefix == "fill"
-    title     = "Fill" if is_fill else "Background"
+    """Build a fill or background color card with CMYK sliders."""
     return ui.card(
-        ui.card_header(ui.output_ui(label_id)),
-        # hex entry
+        ui.card_header(ui.output_ui(f"{prefix}_label_ui")),
         ui.div(
-            ui.tags.span("Hex", style="font-size:11px;color:#666;margin-right:6px"),
-            ui.input_text(f"{prefix}_hex", None,
-                          value=init_hex, width="100px"),
-            style="display:flex;align-items:center;margin-bottom:6px",
-        ),
-        # CMYK accordion
-        ui.accordion(
-            ui.accordion_panel(
-                "CMYK",
-                ui.div(
-                    ui.input_slider(f"{prefix}_c", "C", 0, 100, 0,       step=1),
-                    ui.input_slider(f"{prefix}_m", "M", 0, 100, 0,       step=1),
-                    ui.input_slider(f"{prefix}_y", "Y", 0, 100, 0,       step=1),
-                    ui.input_slider(f"{prefix}_k", "K", 0, 100, init_k,  step=1),
-                    class_="color-sliders",
-                ),
-            ),
-            id=f"{prefix}_cmyk_acc", open=False,
-        ),
-        # HSL accordion
-        ui.accordion(
-            ui.accordion_panel(
-                "HSL",
-                ui.div(
-                    ui.input_slider(f"{prefix}_hsl_h", "H", 0, 360, 0,   step=1),
-                    ui.input_slider(f"{prefix}_hsl_s", "S", 0, 100, 0,   step=1),
-                    ui.input_slider(f"{prefix}_hsl_l", "L", 0, 100,
-                                    0 if is_fill else 100,                step=1),
-                    class_="color-sliders",
-                ),
-            ),
-            id=f"{prefix}_hsl_acc", open=False,
+            ui.input_slider(f"{prefix}_c", "C", 0, 100, 0,      step=1),
+            ui.input_slider(f"{prefix}_m", "M", 0, 100, 0,      step=1),
+            ui.input_slider(f"{prefix}_y", "Y", 0, 100, 0,      step=1),
+            ui.input_slider(f"{prefix}_k", "K", 0, 100, init_k, step=1),
+            class_="color-sliders",
         ),
         full_screen=False,
     )
@@ -409,11 +457,29 @@ app_ui = ui.page_fluid(
                 ),
 
                 # ----------------------------------------------------------
-                # Tab 3: Colors
+                # Tab 3: Colors (nested Palette / Sliders)
                 # ----------------------------------------------------------
                 ui.nav_panel("Colors",
-                    _color_card("fill", "#000000", init_k=100),
-                    _color_card("bg",   "#ffffff", init_k=0),
+                    ui.navset_pill(
+                        ui.nav_panel("Palette",
+                            ui.div(style="height:6px"),
+                            ui.input_radio_buttons(
+                                "palette_target", "Editing:",
+                                choices={"fill": "Fill", "bg": "Background"},
+                                selected="fill", inline=True,
+                            ),
+                            ui.div(
+                                ui.HTML(_PALETTE_HTML),
+                                style="margin-top:4px",
+                            ),
+                        ),
+                        ui.nav_panel("Sliders",
+                            ui.div(style="height:6px"),
+                            _color_card("fill", "#000000", init_k=100),
+                            _color_card("bg",   "#ffffff", init_k=0),
+                        ),
+                        id="color_subtabs",
+                    ),
                     ui.div(
                         ui.output_ui("color_compare_ui"),
                         style="margin-top:8px",
@@ -686,43 +752,27 @@ def server(input, output, session):
     # ----------------------------------------------------------------
     _color_syncing = {"fill": False, "bg": False}
 
-    def _sync_fill_from_hex(hex_str):
+    def _sync_fill_from_hex(hex_str, update_sliders=True):
         fill_hex_rv.set(hex_str)
-        result = pattern_core.hex_to_cmyk(hex_str)
-        if result:
-            c, m, y, k = result
-            ui.update_slider("fill_c", value=c, session=session)
-            ui.update_slider("fill_m", value=m, session=session)
-            ui.update_slider("fill_y", value=y, session=session)
-            ui.update_slider("fill_k", value=k, session=session)
-        try:
-            r, g, b = pattern_core._hex_to_rgb(hex_str)
-            h, s, l = pattern_core._rgb_to_hsl(r, g, b)
-            ui.update_slider("fill_hsl_h", value=round(h),     session=session)
-            ui.update_slider("fill_hsl_s", value=round(s*100), session=session)
-            ui.update_slider("fill_hsl_l", value=round(l*100), session=session)
-        except Exception:
-            pass
-        ui.update_text("fill_hex", value=hex_str, session=session)
+        if update_sliders:
+            result = pattern_core.hex_to_cmyk(hex_str)
+            if result:
+                c, m, y, k = result
+                ui.update_slider("fill_c", value=c, session=session)
+                ui.update_slider("fill_m", value=m, session=session)
+                ui.update_slider("fill_y", value=y, session=session)
+                ui.update_slider("fill_k", value=k, session=session)
 
-    def _sync_bg_from_hex(hex_str):
+    def _sync_bg_from_hex(hex_str, update_sliders=True):
         bg_hex_rv.set(hex_str)
-        result = pattern_core.hex_to_cmyk(hex_str)
-        if result:
-            c, m, y, k = result
-            ui.update_slider("bg_c", value=c, session=session)
-            ui.update_slider("bg_m", value=m, session=session)
-            ui.update_slider("bg_y", value=y, session=session)
-            ui.update_slider("bg_k", value=k, session=session)
-        try:
-            r, g, b = pattern_core._hex_to_rgb(hex_str)
-            h, s, l = pattern_core._rgb_to_hsl(r, g, b)
-            ui.update_slider("bg_hsl_h", value=round(h),     session=session)
-            ui.update_slider("bg_hsl_s", value=round(s*100), session=session)
-            ui.update_slider("bg_hsl_l", value=round(l*100), session=session)
-        except Exception:
-            pass
-        ui.update_text("bg_hex", value=hex_str, session=session)
+        if update_sliders:
+            result = pattern_core.hex_to_cmyk(hex_str)
+            if result:
+                c, m, y, k = result
+                ui.update_slider("bg_c", value=c, session=session)
+                ui.update_slider("bg_m", value=m, session=session)
+                ui.update_slider("bg_y", value=y, session=session)
+                ui.update_slider("bg_k", value=k, session=session)
 
     @reactive.effect
     @reactive.event(input.fill_c, input.fill_m, input.fill_y, input.fill_k)
@@ -730,39 +780,10 @@ def server(input, output, session):
         if _color_syncing["fill"]: return
         _color_syncing["fill"] = True
         try:
-            hex_str = pattern_core.cmyk_to_hex(
+            _sync_fill_from_hex(pattern_core.cmyk_to_hex(
                 input.fill_c(), input.fill_m(),
                 input.fill_y(), input.fill_k()
-            )
-            _sync_fill_from_hex(hex_str)
-        finally:
-            _color_syncing["fill"] = False
-
-    @reactive.effect
-    @reactive.event(input.fill_hsl_h, input.fill_hsl_s, input.fill_hsl_l)
-    def _fill_from_hsl():
-        if _color_syncing["fill"]: return
-        _color_syncing["fill"] = True
-        try:
-            hex_str = pattern_core._hsl_to_hex(
-                input.fill_hsl_h(),
-                input.fill_hsl_s() / 100.0,
-                input.fill_hsl_l() / 100.0,
-            )
-            _sync_fill_from_hex(hex_str)
-        finally:
-            _color_syncing["fill"] = False
-
-    @reactive.effect
-    @reactive.event(input.fill_hex)
-    def _fill_from_hex():
-        if _color_syncing["fill"]: return
-        _color_syncing["fill"] = True
-        try:
-            raw = input.fill_hex().strip()
-            hex_str = raw if raw.startswith("#") else "#" + raw
-            if pattern_core.hex_to_cmyk(hex_str):
-                _sync_fill_from_hex(hex_str)
+            ), update_sliders=False)
         finally:
             _color_syncing["fill"] = False
 
@@ -772,39 +793,10 @@ def server(input, output, session):
         if _color_syncing["bg"]: return
         _color_syncing["bg"] = True
         try:
-            hex_str = pattern_core.cmyk_to_hex(
+            _sync_bg_from_hex(pattern_core.cmyk_to_hex(
                 input.bg_c(), input.bg_m(),
                 input.bg_y(), input.bg_k()
-            )
-            _sync_bg_from_hex(hex_str)
-        finally:
-            _color_syncing["bg"] = False
-
-    @reactive.effect
-    @reactive.event(input.bg_hsl_h, input.bg_hsl_s, input.bg_hsl_l)
-    def _bg_from_hsl():
-        if _color_syncing["bg"]: return
-        _color_syncing["bg"] = True
-        try:
-            hex_str = pattern_core._hsl_to_hex(
-                input.bg_hsl_h(),
-                input.bg_hsl_s() / 100.0,
-                input.bg_hsl_l() / 100.0,
-            )
-            _sync_bg_from_hex(hex_str)
-        finally:
-            _color_syncing["bg"] = False
-
-    @reactive.effect
-    @reactive.event(input.bg_hex)
-    def _bg_from_hex():
-        if _color_syncing["bg"]: return
-        _color_syncing["bg"] = True
-        try:
-            raw = input.bg_hex().strip()
-            hex_str = raw if raw.startswith("#") else "#" + raw
-            if pattern_core.hex_to_cmyk(hex_str):
-                _sync_bg_from_hex(hex_str)
+            ), update_sliders=False)
         finally:
             _color_syncing["bg"] = False
 
@@ -883,6 +875,16 @@ def server(input, output, session):
         click = input.harmony_click()
         req(click)
         _sync_bg_from_hex(click["hex"])
+
+    # Clicking a named palette swatch sets fill or background
+    @reactive.effect
+    def _palette_click():
+        click = input.palette_click()
+        req(click)
+        if input.palette_target() == "fill":
+            _sync_fill_from_hex(click["hex"])
+        else:
+            _sync_bg_from_hex(click["hex"])
 
     # ----------------------------------------------------------------
     # Outputs — Tiling tab
